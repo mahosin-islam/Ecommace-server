@@ -1,0 +1,70 @@
+import express, { Express, Request, Response, NextFunction } from 'express';
+import cors from 'cors';
+import helmet from 'helmet';
+import morgan from 'morgan';
+import rateLimit from 'express-rate-limit';
+import { env } from './config/env.js';
+import { router } from './routers/router.js';
+import { errorHandler } from './middlewares/error.js';
+import { NotFoundError } from './utils/appError.js';
+
+export function createApp(): Express {
+  const app = express();
+
+  // Security headers
+  app.use(helmet());
+
+  // CORS configuration
+  const allowedOrigins = env.CORS_ORIGIN.split(',').map((o) => o.trim());
+  app.use(
+    cors({
+      origin: (origin, callback) => {
+        // Allow requests with no origin (like mobile apps, curl, postman)
+        if (!origin || allowedOrigins.includes(origin) || allowedOrigins.includes('*')) {
+          callback(null, true);
+        } else {
+          callback(new Error('Blocked by CORS policy'));
+        }
+      },
+      credentials: true
+    })
+  );
+
+  // Rate Limiting (200 requests per 15 minutes per IP for general API routes)
+  const limiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 200,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: {
+      success: false,
+      error: {
+        code: 'RATE_LIMIT_EXCEEDED',
+        message: 'Too many requests from this IP. Please try again after 15 minutes.'
+      }
+    }
+  });
+  app.use('/api', limiter);
+
+  // Request Parsing
+  app.use(express.json({ limit: '10mb' }));
+  app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+
+  // HTTP Request Logging
+  if (env.NODE_ENV !== 'test') {
+    app.use(morgan(env.NODE_ENV === 'production' ? 'combined' : 'dev'));
+  }
+
+  // API Version 1 Central Router
+  app.use('/api/v1', router);
+
+  // Catch-all 404 for undefined routes
+  app.use((req: Request, _res: Response, next: NextFunction) => {
+    next(new NotFoundError(`Route ${req.method} ${req.originalUrl} not found`));
+  });
+
+  // Centralized Error Handler
+  app.use(errorHandler);
+
+  return app;
+}
