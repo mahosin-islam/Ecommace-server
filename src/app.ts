@@ -3,6 +3,7 @@ import cors from 'cors';
 import helmet from 'helmet';
 import morgan from 'morgan';
 import rateLimit from 'express-rate-limit';
+import cookieParser from 'cookie-parser';
 import { env } from './config/env.js';
 import { router } from './routers/router.js';
 import { errorHandler } from './middlewares/error.js';
@@ -14,21 +15,24 @@ export function createApp(): Express {
   // Security headers
   app.use(helmet());
 
-  // CORS configuration
-  const allowedOrigins = env.CORS_ORIGIN.split(',').map((o) => o.trim());
-  app.use(
-    cors({
-      origin: (origin, callback) => {
-        // Allow requests with no origin (like mobile apps, curl, postman)
-        if (!origin || allowedOrigins.includes(origin) || allowedOrigins.includes('*')) {
-          callback(null, true);
-        } else {
-          callback(new Error('Blocked by CORS policy'));
-        }
-      },
-      credentials: true
-    })
-  );
+  // Cookie parsing for OAuth state and sessions
+  app.use(cookieParser());
+
+      // CORS configuration
+      const allowedOrigins = env.CORS_ORIGIN.split(',').map((o) => o.trim());
+      app.use(
+        cors({
+          origin: (origin, callback) => {
+            // Allow requests with no origin (like mobile apps, curl, postman)
+            if (!origin || allowedOrigins.includes(origin)) {
+              callback(null, true);
+            } else {
+              callback(new Error('Blocked by CORS policy'));
+            }
+          },
+          credentials: true
+        })
+      );
 
   // Rate Limiting (200 requests per 15 minutes per IP for general API routes)
   const limiter = rateLimit({
@@ -45,6 +49,9 @@ export function createApp(): Express {
     }
   });
   app.use('/api', limiter);
+
+  // Stripe webhook needs raw body BEFORE express.json()
+  app.use('/api/v1/payments/webhook/stripe', express.raw({ type: 'application/json' }));
 
   // Request Parsing
   app.use(express.json({ limit: '10mb' }));

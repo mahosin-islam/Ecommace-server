@@ -2,6 +2,7 @@ import { Request, Response, NextFunction } from 'express';
 import { UnauthorizedError } from '../utils/appError.js';
 import { verifyAccessToken } from '../utils/token.js';
 import { prisma } from '../lib/prisma.js';
+import { COOKIE_NAMES } from '../utils/cookies.js';
 
 export interface AuthUser {
   id: string;
@@ -20,19 +21,30 @@ declare global {
   }
 }
 
-export async function authenticate(req: Request, _res: Response, next: NextFunction): Promise<void> {
+function extractToken(req: Request): string | null {
   const authHeader = req.headers.authorization;
-
-  if (!authHeader || !authHeader.startsWith('Bearer ')) {
-    return next(new UnauthorizedError('Authentication token is required'));
+  if (authHeader && authHeader.startsWith('Bearer ')) {
+    return authHeader.split(' ')[1];
   }
 
-  const token = authHeader.split(' ')[1];
+  const cookieToken = req.cookies?.[COOKIE_NAMES.ACCESS_TOKEN];
+  if (cookieToken) {
+    return cookieToken;
+  }
+
+  return null;
+}
+
+export async function authenticate(req: Request, _res: Response, next: NextFunction): Promise<void> {
+  const token = extractToken(req);
+
+  if (!token) {
+    return next(new UnauthorizedError('Authentication token is required'));
+  }
 
   try {
     const payload = verifyAccessToken(token);
 
-    // Verify user still exists and is active
     const user = await prisma.user.findUnique({
       where: { id: payload.userId },
       select: {

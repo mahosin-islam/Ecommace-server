@@ -5,6 +5,7 @@ import { prisma } from '../lib/prisma.js';
 import { NotFoundError, BadRequestError } from '../utils/appError.js';
 import { sendSuccess } from '../utils/response.js';
 import { authenticate } from '../middlewares/auth.js';
+import { evaluateCoupon } from './coupons.js';
 
 export interface CreateOrderItemInput {
   productId: string;
@@ -21,8 +22,19 @@ export interface CreateOrderInput {
   billingAddress?: Record<string, unknown>;
   shippingMethod?: string;
   customerNotes?: string;
+  couponCode?: string;
   paymentMethod: string;
   items: CreateOrderItemInput[];
+}
+
+function normalizePaymentMethod(method: string): string {
+  const value = method.trim().toLowerCase();
+  if (['cod', 'cash_on_delivery', 'cash-on-delivery'].includes(value)) return 'cod';
+  if (['stripe', 'card', 'credit_card', 'credit-card', 'mock_card'].includes(value)) {
+    return 'stripe';
+  }
+  if (value === 'bkash' || value === 'nagad') return value;
+  throw new BadRequestError(`Unsupported payment method: ${method}`);
 }
 
 export class OrderService {
@@ -30,6 +42,8 @@ export class OrderService {
     if (!input.items || input.items.length === 0) {
       throw new BadRequestError('Order must contain at least one item');
     }
+
+    const paymentProvider = normalizePaymentMethod(input.paymentMethod);
 
     const order = await prisma.$transaction(async (tx) => {
       let subtotal = new Prisma.Decimal(0);
@@ -147,18 +161,51 @@ export class OrderService {
       const flatShippingSetting = await tx.storeSetting.findUnique({
         where: { key: 'shipping.flat_rate' }
       });
+      const currencySetting = await tx.storeSetting.findUnique({
+        where: { key: 'store.currency' }
+      });
 
       const taxRate = taxRateSetting ? parseFloat(taxRateSetting.value) / 100 : 0.0;
       const freeShipThreshold = freeShipThresholdSetting ? parseFloat(freeShipThresholdSetting.value) : 100;
       const flatRate = flatShippingSetting ? parseFloat(flatShippingSetting.value) : 5.0;
+      const currency = currencySetting?.value || 'USD';
 
-      const taxAmount = subtotal.mul(taxRate).toDecimalPlaces(2);
+      let discountAmount = new Prisma.Decimal(0);
+      let couponId: string | null = null;
+
+      if (input.couponCode) {
+        const evaluation = await evaluateCoupon(
+          tx,
+          input.couponCode,
+          subtotal.toNumber(),
+          input.userId ?? null,
+        );
+        discountAmount = new Prisma.Decimal(evaluation.discountAmount);
+        couponId = evaluation.couponId;
+
+        const now = new Date();
+        const reserved = await tx.$executeRaw`
+          UPDATE coupons
+          SET "usageCount" = "usageCount" + 1
+          WHERE id = ${evaluation.couponId}
+            AND "isActive" = true
+            AND "startDate" <= ${now}
+            AND "endDate" >= ${now}
+            AND ("usageLimit" IS NULL OR "usageCount" < "usageLimit")
+        `;
+        if (reserved === 0) {
+          throw new BadRequestError('Coupon usage limit has been reached');
+        }
+      }
+
+      const discountedSubtotal = subtotal.sub(discountAmount);
+      const taxAmount = discountedSubtotal.mul(taxRate).toDecimalPlaces(2);
       const shippingAmount =
-        subtotal.toNumber() >= freeShipThreshold
+        discountedSubtotal.toNumber() >= freeShipThreshold
           ? new Prisma.Decimal(0)
           : new Prisma.Decimal(flatRate);
 
-      const totalAmount = subtotal.add(taxAmount).add(shippingAmount);
+      const totalAmount = discountedSubtotal.add(taxAmount).add(shippingAmount);
 
       const datePrefix = new Date().toISOString().slice(0, 10).replace(/-/g, '');
       const randomSuffix = crypto.randomBytes(3).toString('hex').toUpperCase();
@@ -173,9 +220,11 @@ export class OrderService {
           customerName: input.customerName,
           status: OrderStatus.PENDING,
           subtotal,
+          discountAmount,
           taxAmount,
           shippingAmount,
           totalAmount,
+          currency,
           shippingAddress: input.shippingAddress as any,
           billingAddress: (input.billingAddress as any) ?? (input.shippingAddress as any),
           shippingMethod: input.shippingMethod ?? 'Standard Delivery',
@@ -190,18 +239,31 @@ export class OrderService {
               changedByUserId: input.userId ?? null
             }
           },
+          ...(couponId
+            ? {
+                couponUsages: {
+                  create: {
+                    couponId,
+                    userId: input.userId ?? null,
+                    discountApplied: discountAmount
+                  }
+                }
+              }
+            : {}),
           payments: {
             create: {
-              provider: input.paymentMethod,
+              provider: paymentProvider,
               amount: totalAmount,
+              currency,
               status: 'PENDING',
-              paymentMethod: input.paymentMethod
+              paymentMethod: paymentProvider
             }
           }
         },
         include: {
           items: true,
-          payments: true
+          payments: true,
+          couponUsages: true
         }
       });
 

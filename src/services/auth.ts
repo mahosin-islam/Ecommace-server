@@ -3,10 +3,21 @@ import crypto from 'crypto';
 import { z } from 'zod';
 import { prisma } from '../lib/prisma.js';
 import { hashPassword, comparePassword } from '../utils/password.js';
-import { generateAccessToken, generateRefreshToken, verifyRefreshToken } from '../utils/token.js';
+import { generateAccessToken, generateRefreshToken, verifyRefreshToken, verifyAccessToken } from '../utils/token.js';
 import { ConflictError, UnauthorizedError, NotFoundError } from '../utils/appError.js';
 import { sendSuccess } from '../utils/response.js';
 import { authenticate } from '../middlewares/auth.js';
+import { GoogleAuthService } from './googleAuth.js';
+import { env } from '../config/env.js';
+import {
+  COOKIE_NAMES,
+  COOKIE_PATHS,
+  setAuthCookies,
+  clearAuthCookies,
+  getCookieOptions,
+  getAccessTokenMaxAge,
+  getRefreshTokenMaxAge
+} from '../utils/cookies.js';
 
 export const registerSchema = z.object({
   email: z.string().email('Please provide a valid email address'),
@@ -24,8 +35,8 @@ export const loginSchema = z.object({
   password: z.string().min(1, 'Password is required')
 });
 
-export const refreshTokenSchema = z.object({
-  refreshToken: z.string().min(1, 'Refresh token is required')
+export const googleOneTapSchema = z.object({
+  credential: z.string().min(1, 'Google credential token is required')
 });
 
 function hashToken(token: string): string {
@@ -33,7 +44,7 @@ function hashToken(token: string): string {
 }
 
 export class AuthService {
-  static async register(data: z.infer<typeof registerSchema>) {
+  static async register(data: z.infer<typeof registerSchema>, res: Response) {
     const existingUser = await prisma.user.findUnique({
       where: { email: data.email.toLowerCase() }
     });
@@ -44,7 +55,6 @@ export class AuthService {
 
     const passwordHash = await hashPassword(data.password);
 
-    // Create user, personal cart, and wishlist atomically
     const user = await prisma.$transaction(async (tx) => {
       const newUser = await tx.user.create({
         data: {
@@ -84,9 +94,12 @@ export class AuthService {
       data: {
         userId: user.id,
         tokenHash: hashToken(refreshToken),
+        familyId: crypto.randomBytes(16).toString('hex'),
         expiresAt
       }
     });
+
+    setAuthCookies(res, accessToken, refreshToken);
 
     return {
       user: {
@@ -96,15 +109,11 @@ export class AuthService {
         lastName: user.lastName,
         role: user.role,
         phone: user.phone
-      },
-      tokens: {
-        accessToken,
-        refreshToken
       }
     };
   }
 
-  static async login(data: z.infer<typeof loginSchema>) {
+  static async login(data: z.infer<typeof loginSchema>, res: Response) {
     const user = await prisma.user.findUnique({
       where: { email: data.email.toLowerCase() }
     });
@@ -139,9 +148,12 @@ export class AuthService {
       data: {
         userId: user.id,
         tokenHash: hashToken(refreshToken),
+        familyId: crypto.randomBytes(16).toString('hex'),
         expiresAt
       }
     });
+
+    setAuthCookies(res, accessToken, refreshToken);
 
     return {
       user: {
@@ -151,15 +163,17 @@ export class AuthService {
         lastName: user.lastName,
         role: user.role,
         phone: user.phone
-      },
-      tokens: {
-        accessToken,
-        refreshToken
       }
     };
   }
 
-  static async refresh(rawRefreshToken: string) {
+  static async refresh(req: Request, res: Response) {
+    const rawRefreshToken = req.cookies?.[COOKIE_NAMES.REFRESH_TOKEN] as string | undefined;
+
+    if (!rawRefreshToken) {
+      throw new UnauthorizedError('Refresh token cookie is required');
+    }
+
     try {
       const payload = verifyRefreshToken(rawRefreshToken);
       const tokenHash = hashToken(rawRefreshToken);
@@ -177,11 +191,40 @@ export class AuthService {
         throw new UnauthorizedError('Account is inactive');
       }
 
+      const familyId = storedToken.familyId ?? storedToken.id;
+
+      // Revoke the entire family on reuse detection (refresh token rotation)
+      await prisma.refreshToken.updateMany({
+        where: { familyId },
+        data: { isRevoked: true, revokedAt: new Date() }
+      });
+
+      const newRefreshToken = generateRefreshToken({
+        userId: storedToken.user.id,
+        email: storedToken.user.email,
+        role: storedToken.user.role as 'CUSTOMER' | 'STAFF' | 'ADMIN'
+      });
+
       const newAccessToken = generateAccessToken({
         userId: storedToken.user.id,
         email: storedToken.user.email,
         role: storedToken.user.role as 'CUSTOMER' | 'STAFF' | 'ADMIN'
       });
+
+      const newExpiresAt = new Date();
+      newExpiresAt.setDate(newExpiresAt.getDate() + 7);
+
+      await prisma.refreshToken.create({
+        data: {
+          userId: storedToken.user.id,
+          tokenHash: hashToken(newRefreshToken),
+          familyId,
+          replacedByTokenHash: tokenHash,
+          expiresAt: newExpiresAt
+        }
+      });
+
+      setAuthCookies(res, newAccessToken, newRefreshToken);
 
       return { accessToken: newAccessToken };
     } catch {
@@ -189,14 +232,25 @@ export class AuthService {
     }
   }
 
-  static async logout(rawRefreshToken?: string) {
+  static async logout(req: Request, res: Response) {
+    const rawRefreshToken = req.cookies?.[COOKIE_NAMES.REFRESH_TOKEN] as string | undefined;
+
     if (rawRefreshToken) {
       const tokenHash = hashToken(rawRefreshToken);
-      await prisma.refreshToken.updateMany({
-        where: { tokenHash },
-        data: { isRevoked: true }
+      const storedToken = await prisma.refreshToken.findUnique({
+        where: { tokenHash }
       });
+
+      if (storedToken) {
+        const familyId = storedToken.familyId ?? storedToken.id;
+        await prisma.refreshToken.updateMany({
+          where: { familyId },
+          data: { isRevoked: true, revokedAt: new Date() }
+        });
+      }
     }
+
+    clearAuthCookies(res);
     return { message: 'Logged out successfully' };
   }
 
@@ -230,7 +284,7 @@ export const authRouter = Router();
 authRouter.post('/register', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const data = registerSchema.parse(req.body);
-    const result = await AuthService.register(data);
+    const result = await AuthService.register(data, res);
     sendSuccess(res, 201, result);
   } catch (err) {
     next(err);
@@ -240,7 +294,7 @@ authRouter.post('/register', async (req: Request, res: Response, next: NextFunct
 authRouter.post('/login', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const data = loginSchema.parse(req.body);
-    const result = await AuthService.login(data);
+    const result = await AuthService.login(data, res);
     sendSuccess(res, 200, result);
   } catch (err) {
     next(err);
@@ -249,8 +303,7 @@ authRouter.post('/login', async (req: Request, res: Response, next: NextFunction
 
 authRouter.post('/refresh', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { refreshToken } = refreshTokenSchema.parse(req.body);
-    const result = await AuthService.refresh(refreshToken);
+    const result = await AuthService.refresh(req, res);
     sendSuccess(res, 200, result);
   } catch (err) {
     next(err);
@@ -259,8 +312,7 @@ authRouter.post('/refresh', async (req: Request, res: Response, next: NextFuncti
 
 authRouter.post('/logout', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { refreshToken } = req.body;
-    const result = await AuthService.logout(refreshToken);
+    const result = await AuthService.logout(req, res);
     sendSuccess(res, 200, result);
   } catch (err) {
     next(err);
@@ -271,6 +323,142 @@ authRouter.get('/me', authenticate, async (req: Request, res: Response, next: Ne
   try {
     const profile = await AuthService.getProfile(req.user!.id);
     sendSuccess(res, 200, profile);
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * GET /api/v1/auth/google
+ * Initiates the Google OAuth 2.0 Authorization Code Flow.
+ */
+authRouter.get('/google', (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const redirectTo = typeof req.query.redirect_to === 'string' ? req.query.redirect_to : undefined;
+    const { authUrl, nonce } = GoogleAuthService.getAuthorizationUrl(redirectTo);
+
+    res.cookie('oauth_state', nonce, {
+      httpOnly: true,
+      secure: env.NODE_ENV === 'production',
+      sameSite: 'lax',
+      maxAge: 10 * 60 * 1000
+    });
+
+    res.redirect(authUrl);
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * GET /api/v1/auth/google/callback
+ * Handles the Google OAuth 2.0 redirect callback.
+ * Sets HTTP-only session cookies and redirects to frontend without tokens in URL.
+ */
+authRouter.get('/google/callback', async (req: Request, res: Response, _next: NextFunction) => {
+  const frontendUrl = env.FRONTEND_URL;
+  const error = req.query.error as string | undefined;
+
+  if (error) {
+    const errorCode = error === 'access_denied' ? 'cancelled' : error;
+    return res.redirect(`${frontendUrl}/auth/callback?error=${encodeURIComponent(errorCode)}`);
+  }
+
+  const code = req.query.code as string | undefined;
+  const state = req.query.state as string | undefined;
+  const cookieNonce = req.cookies?.oauth_state as string | undefined;
+
+  res.clearCookie('oauth_state');
+
+  if (!code || !state) {
+    return res.redirect(`${frontendUrl}/auth/callback?error=invalid_request&message=Missing+code+or+state`);
+  }
+
+  try {
+    const result = await GoogleAuthService.handleCallback(code, state, cookieNonce);
+
+    const tokenPayload = {
+      userId: result.user.id,
+      email: result.user.email,
+      role: result.user.role
+    };
+
+    const accessToken = generateAccessToken(tokenPayload);
+    const refreshToken = generateRefreshToken(tokenPayload);
+
+    const expiresAt = new Date();
+    expiresAt.setDate(expiresAt.getDate() + 7);
+
+    await prisma.refreshToken.create({
+      data: {
+        userId: result.user.id,
+        tokenHash: hashToken(refreshToken),
+        familyId: crypto.randomBytes(16).toString('hex'),
+        expiresAt
+      }
+    });
+
+    setAuthCookies(res, accessToken, refreshToken);
+
+    const redirectTarget = result.redirectTo ? `&redirect_to=${encodeURIComponent(result.redirectTo)}` : '';
+
+    return res.redirect(`${frontendUrl}/auth/callback${redirectTarget}`);
+  } catch (err: any) {
+    const errorCode = err?.errorCode || (err?.statusCode === 409 ? 'GOOGLE_ACCOUNT_LINK_REQUIRED' : 'auth_failed');
+    const message = err?.message || 'Google authentication failed';
+
+    return res.redirect(
+      `${frontendUrl}/auth/callback?error=${encodeURIComponent(errorCode)}&message=${encodeURIComponent(message)}`
+    );
+  }
+});
+
+/**
+ * GET /api/v1/auth/google/config
+ * Exposes the public Google Client ID to client applications.
+ */
+authRouter.get('/google/config', (_req: Request, res: Response) => {
+  sendSuccess(res, 200, {
+    clientId: env.GOOGLE_CLIENT_ID || null
+  });
+});
+
+/**
+ * POST /api/v1/auth/google/one-tap
+ * Handles Google One Tap credential verification.
+ * Sets HTTP-only session cookies instead of returning tokens in JSON body.
+ */
+authRouter.post('/google/one-tap', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { credential } = googleOneTapSchema.parse(req.body);
+    const result = await GoogleAuthService.verifyAndAuthenticateIdToken(credential);
+
+    const tokenPayload = {
+      userId: result.user.id,
+      email: result.user.email,
+      role: result.user.role
+    };
+
+    const accessToken = generateAccessToken(tokenPayload);
+    const refreshToken = generateRefreshToken(tokenPayload);
+
+    const expiresAt = new Date();
+    expiresAt.setDate(expiresAt.getDate() + 7);
+
+    await prisma.refreshToken.create({
+      data: {
+        userId: result.user.id,
+        tokenHash: hashToken(refreshToken),
+        familyId: crypto.randomBytes(16).toString('hex'),
+        expiresAt
+      }
+    });
+
+    setAuthCookies(res, accessToken, refreshToken);
+
+    sendSuccess(res, 200, {
+      user: result.user
+    });
   } catch (err) {
     next(err);
   }
