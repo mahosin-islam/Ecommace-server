@@ -3,10 +3,13 @@ import bcrypt from 'bcryptjs';
 
 const prisma = new PrismaClient();
 
+const isProduction = process.env.NODE_ENV === 'production';
+
 async function main() {
   console.log('🌱 Starting database seed...');
+  console.log(`📍 Environment: ${process.env.NODE_ENV || 'development'}`);
 
-  // 1. Seed Store Settings
+  // 1. Seed Store Settings (safe for all environments — non-sensitive config)
   console.log('⚙️ Seeding store settings...');
   const settings = [
     { key: 'store.name', value: 'Apex Store', type: 'string', group: 'general', description: 'Store name' },
@@ -27,51 +30,74 @@ async function main() {
     });
   }
 
-  // 2. Seed Default Admin User
-  console.log('👤 Seeding default admin user...');
-  const adminPasswordHash = await bcrypt.hash('AdminPassword123!', 10);
-  const admin = await prisma.user.upsert({
-    where: { email: 'admin@ecommerce.local' },
-    update: {},
-    create: {
-      email: 'admin@ecommerce.local',
-      passwordHash: adminPasswordHash,
-      firstName: 'Admin',
-      lastName: 'Manager',
-      role: Role.ADMIN,
-      isEmailVerified: true
-    }
-  });
+  if (isProduction) {
+    console.log('⚠️  Production mode: skipping admin user, customer, brands, categories, and products.');
+    console.log('🔐 Create the initial ADMIN account using ADMIN_EMAIL and ADMIN_PASSWORD environment variables.');
+    console.log('✅ Seeding complete (store settings only).');
+    return;
+  }
 
-  // 3. Seed Default Customer
+  // 2. Seed Default Admin User (development only — requires env-driven credentials)
+  console.log('👤 Seeding default admin user...');
+  const adminEmail = process.env.ADMIN_EMAIL || 'admin@ecommerce.local';
+  const adminPassword = process.env.ADMIN_PASSWORD;
+
+  if (!adminPassword) {
+    console.log('⚠️  ADMIN_PASSWORD not set — skipping admin user creation. Set ADMIN_EMAIL and ADMIN_PASSWORD to create an admin account.');
+  } else {
+    const adminPasswordHash = await bcrypt.hash(adminPassword, 10);
+    const admin = await prisma.user.upsert({
+      where: { email: adminEmail.toLowerCase() },
+      update: {},
+      create: {
+        email: adminEmail.toLowerCase(),
+        passwordHash: adminPasswordHash,
+        firstName: 'Admin',
+        lastName: 'Manager',
+        role: Role.ADMIN,
+        isEmailVerified: true
+      }
+    });
+    console.log(`👤 Admin Account: ${admin.email}`);
+  }
+
+  // 3. Seed Default Customer (development only — requires env-driven credentials)
   console.log('👤 Seeding demo customer...');
-  const customerPasswordHash = await bcrypt.hash('Customer123!', 10);
-  const customer = await prisma.user.upsert({
-    where: { email: 'customer@example.com' },
-    update: {},
-    create: {
-      email: 'customer@example.com',
-      passwordHash: customerPasswordHash,
-      firstName: 'Jane',
-      lastName: 'Shopper',
-      role: Role.CUSTOMER,
-      isEmailVerified: true,
-      addresses: {
-        create: {
-          recipientName: 'Jane Shopper',
-          phone: '+14155552671',
-          line1: '742 Evergreen Terrace',
-          city: 'Springfield',
-          state: 'OR',
-          postalCode: '97477',
-          country: 'US',
-          isDefault: true
+  const customerEmail = process.env.CUSTOMER_EMAIL || 'customer@example.com';
+  const customerPassword = process.env.CUSTOMER_PASSWORD;
+
+  if (!customerPassword) {
+    console.log('⚠️  CUSTOMER_PASSWORD not set — skipping customer user creation. Set CUSTOMER_EMAIL and CUSTOMER_PASSWORD to create a customer account.');
+  } else {
+    const customerPasswordHash = await bcrypt.hash(customerPassword, 10);
+    const customer = await prisma.user.upsert({
+      where: { email: customerEmail.toLowerCase() },
+      update: {},
+      create: {
+        email: customerEmail.toLowerCase(),
+        passwordHash: customerPasswordHash,
+        firstName: 'Jane',
+        lastName: 'Shopper',
+        role: Role.CUSTOMER,
+        isEmailVerified: true,
+        addresses: {
+          create: {
+            recipientName: 'Jane Shopper',
+            phone: '+14155552671',
+            line1: '742 Evergreen Terrace',
+            city: 'Springfield',
+            state: 'OR',
+            postalCode: '97477',
+            country: 'US',
+            isDefault: true
+          }
         }
       }
-    }
-  });
+    });
+    console.log(`👤 Customer Account: ${customer.email}`);
+  }
 
-  // 4. Seed Brands
+  // 4. Seed Brands (development only)
   console.log('🏷️ Seeding brands...');
   const brandApex = await prisma.brand.upsert({
     where: { slug: 'apex-threads' },
@@ -93,7 +119,7 @@ async function main() {
     }
   });
 
-  // 5. Seed Categories
+  // 5. Seed Categories (development only)
   console.log('📁 Seeding categories...');
   const catFashion = await prisma.category.upsert({
     where: { slug: 'fashion' },
@@ -126,7 +152,7 @@ async function main() {
     }
   });
 
-  // 6. Seed Products with Variants & Images
+  // 6. Seed Products with Variants & Images (development only)
   console.log('📦 Seeding products with variants...');
 
   // Product 1: Fashion Oxford Shirt
@@ -221,8 +247,6 @@ async function main() {
   });
 
   console.log('✅ Seeding complete!');
-  console.log(`👤 Admin Account: ${admin.email} (Password: AdminPassword123!)`);
-  console.log(`👤 Customer Account: ${customer.email} (Password: Customer123!)`);
 }
 
 main()

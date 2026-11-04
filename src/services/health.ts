@@ -16,8 +16,6 @@ healthRouter.get('/', async (_req: Request, res: Response) => {
       uptimeSeconds: process.uptime()
     });
   } catch (err: any) {
-    sendError(res, 503, 'SERVICE_UNAVAILABLE', 'Database connection unavailable', {
-      error: err.message
-    });
+    sendError(res, 503, 'SERVICE_UNAVAILABLE', 'Database connection unavailable');
   }
 });

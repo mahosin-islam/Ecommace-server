@@ -1,7 +1,7 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { z } from 'zod';
 import { prisma } from '../lib/prisma.js';
-import { NotFoundError } from '../utils/appError.js';
+import { NotFoundError, ForbiddenError } from '../utils/appError.js';
 import { sendSuccess } from '../utils/response.js';
 import { authenticate } from '../middlewares/auth.js';
 
@@ -80,7 +80,19 @@ usersRouter.put('/me', async (req: Request, res: Response, next: NextFunction) =
 
 usersRouter.get('/:id', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const profile = await UserService.getProfile(req.params.id as string);
+    const requestingUserId = req.user!.id;
+    const requestingUserRole = req.user!.role;
+    const targetUserId = req.params.id as string;
+
+    // Customers can only access their own profile.
+    // ADMIN/STAFF can access any profile (existing RBAC policy).
+    if (requestingUserRole !== 'ADMIN' && requestingUserRole !== 'STAFF') {
+      if (requestingUserId !== targetUserId) {
+        throw new ForbiddenError('You can only access your own profile');
+      }
+    }
+
+    const profile = await UserService.getProfile(targetUserId);
     sendSuccess(res, 200, profile);
   } catch (err) {
     next(err);

@@ -7,16 +7,24 @@ import cookieParser from 'cookie-parser';
 import { env } from './config/env.js';
 import { router } from './routers/router.js';
 import { errorHandler } from './middlewares/error.js';
+import { csrfTokenHandler, csrfProtection } from './middlewares/csrf.js';
 import { NotFoundError } from './utils/appError.js';
 
 export function createApp(): Express {
   const app = express();
+
+  // Trust proxy for Render load balancer: client IP detection and IP-based rate limiting
+  app.set('trust proxy', true);
 
   // Security headers
   app.use(helmet());
 
   // Cookie parsing for OAuth state and sessions
   app.use(cookieParser());
+
+  // CSRF token cookie (double-submit pattern): set on safe methods,
+  // validated on state-changing methods by csrfProtection below.
+  app.use(csrfTokenHandler);
 
       // CORS configuration
       const allowedOrigins = env.CORS_ORIGIN.split(',').map((o) => o.trim());
@@ -48,6 +56,55 @@ export function createApp(): Express {
       }
     }
   });
+
+  // Stricter rate limits for sensitive authentication endpoints
+  const loginLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 5,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: {
+      success: false,
+      error: {
+        code: 'RATE_LIMIT_EXCEEDED',
+        message: 'Too many login attempts. Please try again after 15 minutes.'
+      }
+    }
+  });
+
+  const registerLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 3,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: {
+      success: false,
+      error: {
+        code: 'RATE_LIMIT_EXCEEDED',
+        message: 'Too many registration attempts. Please try again after 15 minutes.'
+      }
+    }
+  });
+
+  const refreshLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 10,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: {
+      success: false,
+      error: {
+        code: 'RATE_LIMIT_EXCEEDED',
+        message: 'Too many token refresh attempts. Please try again after 15 minutes.'
+      }
+    }
+  });
+
+  // Apply auth-specific limiters before the general limiter
+  app.use('/api/v1/auth/login', loginLimiter);
+  app.use('/api/v1/auth/register', registerLimiter);
+  app.use('/api/v1/auth/refresh', refreshLimiter);
+
   app.use('/api', limiter);
 
   // Stripe webhook needs raw body BEFORE express.json()
@@ -62,8 +119,8 @@ export function createApp(): Express {
     app.use(morgan(env.NODE_ENV === 'production' ? 'combined' : 'dev'));
   }
 
-  // API Version 1 Central Router
-  app.use('/api/v1', router);
+  // API Version 1 Central Router (CSRF validation for state-changing routes)
+  app.use('/api/v1', csrfProtection, router);
 
   // Catch-all 404 for undefined routes
   app.use((req: Request, _res: Response, next: NextFunction) => {
