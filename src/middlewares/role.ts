@@ -8,7 +8,7 @@ export function requireRole(allowedRoles: ('CUSTOMER' | 'STAFF' | 'ADMIN')[]) {
     }
 
     if (!allowedRoles.includes(req.user.role)) {
-      return next(new ForbiddenError('You do not have permission to access this resource'));
+      return next(new ForbiddenError('You do not have the permission to access this resource'));
     }
 
     next();
