@@ -132,3 +132,9 @@ export function createApp(): Express {
 
   return app;
 }
+
+// Shared Express application instance — used by both local server (server.ts)
+// and Vercel Serverless Function (default export). One instance, no duplication.
+const app = createApp();
+
+export default app;

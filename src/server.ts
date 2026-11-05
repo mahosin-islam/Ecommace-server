@@ -1,9 +1,7 @@
-import { createApp } from './app.js';
+import app from './app.js';
 import { env } from './config/env.js';
 import { logger } from './utils/logger.js';
 import { prisma } from './lib/prisma.js';
-
-const app = createApp();
 
 const server = app.listen(env.PORT, () => {
   logger.info(`🚀 E-Commerce Backend running in ${env.NODE_ENV} mode`);
