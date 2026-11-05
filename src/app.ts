@@ -14,7 +14,7 @@ export function createApp(): Express {
   const app = express();
 
   // Trust proxy for Render load balancer: client IP detection and IP-based rate limiting
-  app.set('trust proxy', true);
+  app.set('trust proxy', 1);
 
   // Security headers
   app.use(helmet());
