@@ -1,11 +1,11 @@
 {
-  "version": 2,
+  "buildCommand": "pnpm install --frozen-lockfile && pnpm run build",
   "functions": {
-    "api/index.js": {
-      "includeFiles": "dist/**"
+    "src/app.ts": {
+      "runtime": "nodejs@20.x"
     }
   },
-  "rewrites": [
-    { "source": "/(.*)", "destination": "/api/index" }
+  "routes": [
+    { "src": "/(.*)", "dest": "/src/app.ts" }
   ]
 }
