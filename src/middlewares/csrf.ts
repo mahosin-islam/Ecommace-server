@@ -51,11 +51,12 @@ export function csrfProtection(req: Request, _res: Response, next: NextFunction)
   }
 
   // Skip CSRF for exempt paths (auth endpoints)
-  if (isCsrfExemptPath(req.path)) {
-    next();
-    return;
-  }
+ const requestPath = req.originalUrl.split('?')[0];
 
+if (isCsrfExemptPath(requestPath)) {
+  next();
+  return;
+}
   const cookieToken = req.cookies?.[CSRF_COOKIE_NAME];
   const headerToken = req.headers[CSRF_HEADER_NAME] as string | undefined;
 
