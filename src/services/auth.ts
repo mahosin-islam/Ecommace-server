@@ -110,7 +110,8 @@ export class AuthService {
         lastName: user.lastName,
         role: user.role,
         phone: user.phone
-      }
+      },
+      accessToken
     };
   }
 
@@ -164,7 +165,8 @@ export class AuthService {
         lastName: user.lastName,
         role: user.role,
         phone: user.phone
-      }
+      },
+      accessToken
     };
   }
 
@@ -458,7 +460,8 @@ authRouter.post('/google/one-tap', async (req: Request, res: Response, next: Nex
     setAuthCookies(res, accessToken, refreshToken);
 
     sendSuccess(res, 200, {
-      user: result.user
+      user: result.user,
+      accessToken
     });
   } catch (err) {
     next(err);

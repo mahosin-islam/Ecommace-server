@@ -36,7 +36,8 @@ export function createApp(): Express {
               callback(new Error('Blocked by CORS policy'));
             }
           },
-          credentials: true
+          credentials: true,
+          allowedHeaders: ['Content-Type', 'Authorization', 'X-CSRF-Token', 'x-request-id']
         })
       );
 
