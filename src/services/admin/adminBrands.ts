@@ -178,3 +178,50 @@ adminBrandsRouter.delete('/:id', async (req: Request, res: Response, next: NextF
     next(err);
   }
 });
+
+// ─── Public Brands Router (No Auth Required) ─────────────────────────────────
+
+export const publicBrandsRouter = Router();
+
+publicBrandsRouter.get('/', async (_req: Request, res: Response, next: NextFunction) => {
+  try {
+    const brands = await prisma.brand.findMany({
+      where: { isActive: true },
+      orderBy: { name: 'asc' },
+      include: { _count: { select: { products: true } } },
+    });
+    sendSuccess(res, 200, brands);
+  } catch (err) {
+    next(err);
+  }
+});
+
+publicBrandsRouter.get('/:slug', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const slug = req.params.slug as string;
+    const brand = await prisma.brand.findUnique({
+      where: { slug },
+      include: {
+        products: {
+          where: { isActive: true, isArchived: false },
+          select: {
+            id: true,
+            title: true,
+            slug: true,
+            basePrice: true,
+            comparePrice: true,
+            stock: true,
+            images: { take: 1, orderBy: { sortOrder: 'asc' } },
+            category: { select: { name: true, slug: true } }
+          }
+        }
+      }
+    });
+    if (!brand || !brand.isActive) {
+      throw new NotFoundError('Brand not found');
+    }
+    sendSuccess(res, 200, brand);
+  } catch (err) {
+    next(err);
+  }
+});

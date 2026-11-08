@@ -13,7 +13,7 @@ import { adminDashboardRouter } from '../services/adminDashboard.js';
 // Admin sub-routers
 import { adminProductsRouter } from '../services/admin/adminProducts.js';
 import { adminCategoriesRouter } from '../services/admin/adminCategories.js';
-import { adminBrandsRouter } from '../services/admin/adminBrands.js';
+import { adminBrandsRouter, publicBrandsRouter } from '../services/admin/adminBrands.js';
 import { adminInventoryRouter } from '../services/admin/adminInventory.js';
 import { adminOrdersRouter } from '../services/admin/adminOrders.js';
 import { adminCustomersRouter } from '../services/admin/adminCustomers.js';
@@ -38,6 +38,7 @@ router.use('/coupons', couponRouter);
 router.use('/orders', orderRouter);
 router.use('/settings', settingRouter);
 router.use('/banners', publicBannersRouter);
+router.use('/brands', publicBrandsRouter);
 
 // ── Payment Routes ───────────────────────────────────────────────────────────
 router.use('/payments', paymentRouter);
