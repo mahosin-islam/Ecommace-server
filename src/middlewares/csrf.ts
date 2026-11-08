@@ -28,20 +28,23 @@ export const generateCsrfToken = (): string => {
   return crypto.randomBytes(32).toString('hex');
 };
 
-export function csrfTokenHandler(_req: Request, res: Response, next: NextFunction): void {
-  // Only set the CSRF cookie on GET/HEAD/OPTIONS (safe methods).
-  // State-changing requests are validated by csrfProtection middleware.
-  if (['GET', 'HEAD', 'OPTIONS'].includes(_req.method)) {
-    const isProduction = env.NODE_ENV === 'production';
-    const sameSite = env.COOKIE_SAME_SITE ?? (isProduction ? 'none' : 'lax');
-    res.cookie(CSRF_COOKIE_NAME, generateCsrfToken(), {
-      httpOnly: false, // must be readable by frontend JS to send in header
-      secure: isProduction,
-      sameSite,
-      path: '/',
-      maxAge: 24 * 60 * 60 * 1000, // 24 hours
-      ...(env.COOKIE_DOMAIN ? { domain: env.COOKIE_DOMAIN } : {}),
-    });
+export function csrfTokenHandler(req: Request, res: Response, next: NextFunction): void {
+  // Only set the CSRF cookie on GET/HEAD/OPTIONS (safe methods) if not already present.
+  // Never overwrite an existing CSRF cookie on subsequent GET requests!
+  if (['GET', 'HEAD', 'OPTIONS'].includes(req.method)) {
+    const existingToken = req.cookies?.[CSRF_COOKIE_NAME];
+    if (!existingToken) {
+      const isProduction = env.NODE_ENV === 'production';
+      const sameSite = env.COOKIE_SAME_SITE ?? (isProduction ? 'none' : 'lax');
+      res.cookie(CSRF_COOKIE_NAME, generateCsrfToken(), {
+        httpOnly: false, // must be readable by frontend JS to send in header
+        secure: isProduction,
+        sameSite,
+        path: '/',
+        maxAge: 24 * 60 * 60 * 1000, // 24 hours
+        ...(env.COOKIE_DOMAIN ? { domain: env.COOKIE_DOMAIN } : {}),
+      });
+    }
   }
   next();
 }
@@ -67,7 +70,10 @@ if (isCsrfExemptPath(requestPath)) {
     throw new ForbiddenError('CSRF token is missing');
   }
 
-  if (!crypto.timingSafeEqual(Buffer.from(cookieToken), Buffer.from(headerToken))) {
+  const cookieBuf = Buffer.from(cookieToken);
+  const headerBuf = Buffer.from(headerToken);
+
+  if (cookieBuf.length !== headerBuf.length || !crypto.timingSafeEqual(cookieBuf, headerBuf)) {
     throw new ForbiddenError('CSRF token mismatch');
   }
 

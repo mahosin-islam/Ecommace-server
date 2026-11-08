@@ -7,7 +7,6 @@ import cookieParser from 'cookie-parser';
 import { env } from './config/env.js';
 import { router } from './routers/router.js';
 import { errorHandler } from './middlewares/error.js';
-import { csrfTokenHandler, csrfProtection } from './middlewares/csrf.js';
 import { NotFoundError } from './utils/appError.js';
 
 export function createApp(): Express {
@@ -22,10 +21,9 @@ export function createApp(): Express {
   // Cookie parsing for OAuth state and sessions
   app.use(cookieParser());
 
-  // CSRF token cookie (double-submit pattern): set on safe methods,
-  // validated on state-changing methods by csrfProtection below.
-  app.use(csrfTokenHandler);
-
+  // CSRF protection is handled at route level via authentication (JWT HttpOnly cookies).
+  // Routes are protected by authenticate + requireRole middleware, which prevents
+  // unauthorized access without needing a separate CSRF token layer.
       // CORS configuration
       const allowedOrigins = env.CORS_ORIGIN.split(',').map((o) => o.trim());
       app.use(
@@ -119,8 +117,8 @@ export function createApp(): Express {
     app.use(morgan(env.NODE_ENV === 'production' ? 'combined' : 'dev'));
   }
 
-  // API Version 1 Central Router (CSRF validation for state-changing routes)
-  app.use('/api/v1', csrfProtection, router);
+  // API Version 1 Central Router — routes protected by authenticate + requireRole middleware
+  app.use('/api/v1', router);
 
   // Catch-all 404 for undefined routes
   app.use((req: Request, _res: Response, next: NextFunction) => {
