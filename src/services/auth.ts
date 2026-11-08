@@ -18,6 +18,7 @@ import {
   getAccessTokenMaxAge,
   getRefreshTokenMaxAge
 } from '../utils/cookies.js';
+import { CSRF_COOKIE_NAME, generateCsrfToken } from '../middlewares/csrf.js';
 
 export const registerSchema = z.object({
   email: z.string().email('Please provide a valid email address'),
@@ -462,4 +463,27 @@ authRouter.post('/google/one-tap', async (req: Request, res: Response, next: Nex
   } catch (err) {
     next(err);
   }
+});
+
+/**
+ * GET /api/v1/auth/csrf-token
+ * Issues or returns a CSRF token with proper cross-domain cookie attributes,
+ * and also returns the token in the response payload for frontend fetch clients.
+ */
+authRouter.get('/csrf-token', (req: Request, res: Response) => {
+  let token = req.cookies?.[CSRF_COOKIE_NAME];
+  if (!token) {
+    token = generateCsrfToken();
+    const isProduction = env.NODE_ENV === 'production';
+    const sameSite = env.COOKIE_SAME_SITE ?? (isProduction ? 'none' : 'lax');
+    res.cookie(CSRF_COOKIE_NAME, token, {
+      httpOnly: false,
+      secure: isProduction,
+      sameSite,
+      path: '/',
+      maxAge: 24 * 60 * 60 * 1000,
+      ...(env.COOKIE_DOMAIN ? { domain: env.COOKIE_DOMAIN } : {}),
+    });
+  }
+  sendSuccess(res, 200, { csrfToken: token });
 });

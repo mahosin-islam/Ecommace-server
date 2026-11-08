@@ -17,13 +17,14 @@ const CSRF_EXEMPT_PATHS = [
   '/api/v1/auth/google/callback',
   '/api/v1/auth/google/one-tap',
   '/api/v1/auth/google/config',
+  '/api/v1/auth/csrf-token',
 ];
 
 const isCsrfExemptPath = (path: string): boolean => {
   return CSRF_EXEMPT_PATHS.some((p) => path.startsWith(p));
 };
 
-const generateCsrfToken = (): string => {
+export const generateCsrfToken = (): string => {
   return crypto.randomBytes(32).toString('hex');
 };
 
@@ -32,12 +33,14 @@ export function csrfTokenHandler(_req: Request, res: Response, next: NextFunctio
   // State-changing requests are validated by csrfProtection middleware.
   if (['GET', 'HEAD', 'OPTIONS'].includes(_req.method)) {
     const isProduction = env.NODE_ENV === 'production';
+    const sameSite = env.COOKIE_SAME_SITE ?? (isProduction ? 'none' : 'lax');
     res.cookie(CSRF_COOKIE_NAME, generateCsrfToken(), {
       httpOnly: false, // must be readable by frontend JS to send in header
       secure: isProduction,
-      sameSite: isProduction ? 'strict' : 'lax',
+      sameSite,
       path: '/',
       maxAge: 24 * 60 * 60 * 1000, // 24 hours
+      ...(env.COOKIE_DOMAIN ? { domain: env.COOKIE_DOMAIN } : {}),
     });
   }
   next();
